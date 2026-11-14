@@ -1,0 +1,88 @@
+RESPUESTAS - CASO SPEEDFORGE (SQL Server)
+==========================================
+
+PREGUNTA 1 - Indice no agrupado
+-------------------------------
+CREATE NONCLUSTERED INDEX IX_CARRERA_id_campeonato
+ON dbo.CARRERA (id_campeonato)
+INCLUDE (fecha_hora_salida);
+GO
+
+Justificacion: id_campeonato es la columna del WHERE (permite Index Seek) y
+fecha_hora_salida va en INCLUDE para cubrir la consulta y evitar Key Lookup
+(id_carrera ya viene incluida por ser la clave del indice agrupado / PK).
+
+
+PREGUNTA 2 - Transacciones
+--------------------------
+Con ROLLBACK: piloto 201 = 45, piloto 202 = 30 (se deshacen ambos UPDATE).
+Con COMMIT:   piloto 201 = 50, piloto 202 = 25 (los cambios quedan guardados).
+Diferencia: ROLLBACK descarta todo lo hecho desde BEGIN TRANSACTION
+(atomicidad); COMMIT confirma los cambios de forma permanente (durabilidad).
+
+
+PREGUNTA 3 - Patrocinadores por campeonato
+------------------------------------------
+SELECT c.denominacion,
+       COUNT(DISTINCT pc.id_patrocinador) AS cantidad_patrocinadores
+FROM dbo.CAMPEONATO c
+INNER JOIN dbo.PATROCINIO_CAMPEONATO pc ON pc.id_campeonato = c.id_campeonato
+GROUP BY c.id_campeonato, c.denominacion;
+GO
+
+- COUNT(DISTINCT) cuenta cada patrocinador una sola vez por campeonato.
+- INNER JOIN deja solo campeonatos con al menos un patrocinador.
+
+
+PREGUNTA 4 - Funcion de tabla en linea
+--------------------------------------
+CREATE FUNCTION dbo.fn_EscuderiasPlantillaCompleta (@id_campeonato INT)
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT e.id_escuderia, e.nombre, COUNT(p.id_piloto) AS cantidad_pilotos
+    FROM dbo.ESCUDERIA e
+    INNER JOIN dbo.PILOTO p ON p.id_escuderia = e.id_escuderia
+    WHERE EXISTS (SELECT 1 FROM dbo.INSCRIPCION_CAMPEONATO i
+                  WHERE i.id_escuderia = e.id_escuderia
+                    AND i.id_campeonato = @id_campeonato)
+    GROUP BY e.id_escuderia, e.nombre
+    HAVING COUNT(p.id_piloto) >= 2
+);
+GO
+
+-- Uso: SELECT * FROM dbo.fn_EscuderiasPlantillaCompleta(1);
+
+- EXISTS evita contar pilotos de mas si la escuderia tiene 2 inscripciones.
+- HAVING >= 2 = plantilla completa.
+
+
+PREGUNTA 5 - Procedimiento almacenado
+-------------------------------------
+CREATE PROCEDURE dbo.usp_SimuladorMayorUso
+    @anio INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    WITH conteo AS
+    (
+        SELECT s.id_simulador, s.nombre, COUNT(ca.id_carrera) AS cantidad_carreras
+        FROM dbo.SIMULADOR s
+        INNER JOIN dbo.CAMPEONATO c ON c.id_simulador = s.id_simulador
+        INNER JOIN dbo.CARRERA ca  ON ca.id_campeonato = c.id_campeonato
+        WHERE YEAR(c.fecha_apertura) = @anio
+        GROUP BY s.id_simulador, s.nombre
+    )
+    SELECT nombre AS simulador, cantidad_carreras
+    FROM conteo
+    WHERE cantidad_carreras = (SELECT MAX(cantidad_carreras) FROM conteo);
+END;
+GO
+
+-- Uso: EXEC dbo.usp_SimuladorMayorUso @anio = 2025;
+
+- Ruta: SIMULADOR -> CAMPEONATO -> CARRERA, filtrando por fecha_apertura.
+- Comparar con el MAX devuelve todos los simuladores empatados.
+- INNER JOIN deja solo simuladores con carreras en ese anio.
