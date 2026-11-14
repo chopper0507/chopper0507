@@ -1,0 +1,131 @@
+PLANTILLAS SQL SERVER - REPASO
+==============================
+Reemplaza lo que esta entre < > por tus tablas y columnas.
+
+
+1. INDICE NO AGRUPADO
+---------------------
+CREATE NONCLUSTERED INDEX IX_<TABLA>_<columna_filtro>
+ON dbo.<TABLA> (<columna_del_WHERE>)
+INCLUDE (<columnas_del_SELECT_que_falten>);
+GO
+
+- Columna del WHERE / JOIN  -> clave del indice (entre parentesis).
+- Columnas del SELECT       -> INCLUDE (evita Key Lookup).
+- La PK NO se pone (ya viene incluida por ser el indice agrupado).
+
+Truco:  SELECT a, b, c   -> INCLUDE (b, c)  (sin la PK)
+        WHERE  x = @x    -> (x)
+
+Justificacion tipo: "<columna> es la clave porque es la columna del WHERE
+y permite Index Seek; <columnas> van en INCLUDE para cubrir la consulta y
+evitar Key Lookup."
+
+Ejemplo:
+CREATE NONCLUSTERED INDEX IX_PILOTO_id_escuderia
+ON dbo.PILOTO (id_escuderia)
+INCLUDE (nombre_completo, dorsal);
+
+
+2. TRANSACCIONES
+----------------
+BEGIN TRANSACTION
+    UPDATE dbo.<TABLA> SET <col> = <col> - <valor> WHERE <pk> = <id1>;
+    UPDATE dbo.<TABLA> SET <col> = <col> + <valor> WHERE <pk> = <id2>;
+COMMIT TRANSACTION      -- o ROLLBACK TRANSACTION
+GO
+
+- ROLLBACK -> respuesta = VALORES INICIALES (se deshace todo).
+- COMMIT   -> haces las sumas/restas (los cambios quedan guardados).
+- Diferencia: nombrar ATOMICIDAD (todo o nada) y DURABILIDAD (COMMIT
+  hace los cambios permanentes).
+
+
+3. CONSULTA CON CONTEO (JOIN + GROUP BY + COUNT)
+------------------------------------------------
+SELECT p.<columna_a_mostrar>,
+       COUNT(DISTINCT h.<id_a_contar>) AS cantidad
+FROM dbo.<TABLA_PRINCIPAL> p
+INNER JOIN dbo.<TABLA_HIJA> h ON h.<fk> = p.<pk>
+WHERE <filtro_opcional>
+GROUP BY p.<pk>, p.<columna_a_mostrar>
+HAVING COUNT(...) >= <N>;          -- opcional
+GO
+
+- "contar cada uno una sola vez"     -> COUNT(DISTINCT ...)
+- "solo los que tengan al menos uno" -> INNER JOIN
+- "incluye los que tengan 0"         -> LEFT JOIN
+- Todo lo del SELECT que no este en COUNT/SUM/AVG va en GROUP BY.
+- Filtrar ANTES de agrupar -> WHERE.  Filtrar por el conteo -> HAVING.
+- Otras funciones: SUM (total), AVG (promedio), MAX, MIN.
+
+Ejemplo:
+SELECT c.denominacion, SUM(pc.monto_financiamiento) AS total_patrocinio
+FROM dbo.CAMPEONATO c
+INNER JOIN dbo.PATROCINIO_CAMPEONATO pc ON pc.id_campeonato = c.id_campeonato
+GROUP BY c.id_campeonato, c.denominacion;
+
+
+4. FUNCION DE TABLA EN LINEA
+----------------------------
+CREATE FUNCTION dbo.fn_<Nombre> (@parametro INT)
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT ...
+    FROM ... INNER JOIN ...
+    WHERE <columna> = @parametro
+    GROUP BY ...
+    HAVING COUNT(...) >= <N>
+);
+GO
+
+-- Uso:
+SELECT * FROM dbo.fn_<Nombre>(1);
+
+- "En linea" = SIN BEGIN/END, solo RETURN ( SELECT ... ).
+- El parametro se usa en el WHERE.
+- "al menos N" -> HAVING COUNT(...) >= N.
+
+
+5. PROCEDIMIENTO ALMACENADO ("EL MAYOR" + EMPATES)
+--------------------------------------------------
+CREATE PROCEDURE dbo.usp_<Nombre>
+    @parametro INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    WITH conteo AS
+    (
+        SELECT x.<id>, x.<nombre>, COUNT(*) AS cantidad
+        FROM ... INNER JOIN ...
+        WHERE <filtro con @parametro>
+        GROUP BY x.<id>, x.<nombre>
+    )
+    SELECT <nombre>, cantidad
+    FROM conteo
+    WHERE cantidad = (SELECT MAX(cantidad) FROM conteo);
+END;
+GO
+
+-- Uso:
+EXEC dbo.usp_<Nombre> @parametro = 2025;
+
+- "el mayor" -> MAX ; "el menor" -> MIN.
+- Comparar con MAX devuelve TODOS los empatados.
+  Alternativa: SELECT TOP 1 WITH TIES ... ORDER BY cantidad DESC
+- Filtro por anio: YEAR(columna_fecha) = @anio  (mes: MONTH(...))
+- Para ir de una tabla a otra, sigue las FK del diagrama.
+
+
+PASOS PARA CUALQUIER PREGUNTA
+-----------------------------
+1. Que me piden mostrar?            -> SELECT
+2. De que tablas sale?              -> JOIN siguiendo las FK
+3. Hay filtro?                      -> WHERE (con @parametro si aplica)
+4. Cantidad / total / promedio?     -> COUNT / SUM / AVG + GROUP BY
+5. "al menos N" / "mas de N"?       -> HAVING
+6. "el mayor" / "el menor"?         -> CTE + MAX / MIN
+7. Funcion o procedimiento?         -> envolver en la plantilla 4 o 5
